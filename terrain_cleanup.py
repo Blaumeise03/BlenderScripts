@@ -2,6 +2,7 @@ from typing import Literal
 
 import bpy
 import bmesh
+import bpy_types
 from mathutils import Vector
 
 from mathutils.bvhtree import BVHTree
@@ -22,6 +23,12 @@ HOW TO USE
 Mode: 
     VERTICAL: Casts vertical (upwards) rays from all faces. If an hit is found, the face gets deleted
     NORMAL: Cast rays into normal direction of the face
+ONLY_SELECTED_FACES:
+    Only deletes faces that are selected
+SKIP_EDGES:
+    Does not delete the edges of the model (only works for rectangular models)
+EDGE_MARGIN:
+    The threshold for the edges 
 Debug:
     If enabled, the mesh will not get modified. All faces that get hit by a ray of a selected face will get selected.
 Debug objects:
@@ -33,6 +40,9 @@ Debug objects:
 """
 MODE = "VERTICAL"  # type: Literal["NORMAL", "VERTICAL"]
 RAY_LENGTH = 400
+ONLY_SELECTED_FACES = False
+SKIP_EDGES = True
+EDGE_MARGIN = 0.5
 # Debug settings
 DEBUG = False
 DEBUG_OBJECTS = False
@@ -47,6 +57,7 @@ else:
     vert_offset = None
     vert_vector = None
 
+
 ########################################################################################################################
 
 
@@ -57,10 +68,34 @@ def log(*args):
 log(f"Starting script. Mode: {MODE}, ray_len: {RAY_LENGTH}, debug: {DEBUG}, create debug objects: {DEBUG_OBJECTS}")
 
 # Get active mesh
-obj = bpy.context.view_layer.objects.active
-mesh = obj.data
+obj = bpy.context.view_layer.objects.active  # type: bpy_types.Object
+mesh = obj.data  # type: bpy_types.Mesh
 mesh_name = obj.name
 mat = obj.matrix_world
+
+bounds = [mat @ Vector(v) for v in obj.bound_box]
+lower_bound = Vector(
+    (min(map(lambda b: b[0], bounds)),
+     min(map(lambda b: b[1], bounds)),
+     min(map(lambda b: b[2], bounds)))
+)
+upper_bound = Vector(
+    (max(map(lambda b: b[0], bounds)),
+     max(map(lambda b: b[1], bounds)),
+     max(map(lambda b: b[2], bounds)))
+)
+if SKIP_EDGES:
+    log("Bounding box:", lower_bound, upper_bound)
+
+
+def is_edge(v: Vector):
+    if (v.x - EDGE_MARGIN <= lower_bound.x or v.x + EDGE_MARGIN >= upper_bound.x or
+            v.y - EDGE_MARGIN <= lower_bound.y or v.y + EDGE_MARGIN >= upper_bound.y or
+            v.z - EDGE_MARGIN <= lower_bound.z):
+        return True
+    return False
+
+
 log("Switching to edit mode")
 bpy.ops.object.mode_set(mode="EDIT")
 
@@ -102,8 +137,12 @@ if MODE == "VERTICAL":
 # noinspection PyTypeChecker
 for face in bm.faces:  # type: bmesh.types.BMFace
     i += 1
+    if ONLY_SELECTED_FACES and not face.select:
+        continue
     # Center of face
     pos = face.calc_center_median()
+    if SKIP_EDGES and is_edge(mat @ pos):
+        continue
     # Adjusting position to prevent the ray from intersecting with the emitting face itself
     # and calculating direction for ray
     if MODE == "NORMAL":
@@ -131,7 +170,7 @@ for face in bm.faces:  # type: bmesh.types.BMFace
                 log(pos, r_pos)
                 to_select.append(p_i)
     if i % 30000 == 0:
-        progress = i/count_faces
+        progress = i / count_faces
         log(f"{progress:4.1%} Processed {i:,} faces, deleted {deleted:,}")
 
 if DEBUG:
@@ -148,9 +187,9 @@ if not DEBUG:
     log(f"Deleted {deleted:,} faces, cleaning up mesh (this may take a while, blender might freeze)...")
     bpy.ops.mesh.select_all(action='SELECT')
     bpy.ops.mesh.delete_loose()
+log("Switching to object mode")
+bpy.ops.object.mode_set(mode="OBJECT")
 if DEBUG_OBJECTS:
-    log("Switching to object mode")
-    bpy.ops.object.mode_set(mode="OBJECT")
     if DEBUG:
         if len(to_create) > 0:
             log(f"Creating {len(to_create)} debug objects")
